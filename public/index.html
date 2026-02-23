@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PSA Time Entry System</title>
+  <meta name="description" content="PSA Time Entry System — Manage and submit your weekly timesheets with ease." />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════ LOGIN SCREEN -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div class="login-logo">
+        <i class="fas fa-clock"></i>
+      </div>
+      <h1>PSA Time Entry</h1>
+      <p class="login-subtitle">Sign in to manage your timesheets</p>
+      <div id="login-error" class="alert alert-error hidden"></div>
+      <form id="login-form">
+        <div class="form-group">
+          <label for="login-username"><i class="fas fa-user"></i> Username</label>
+          <input type="text" id="login-username" placeholder="Enter your username" autocomplete="username" required />
+        </div>
+        <div class="form-group">
+          <label for="login-password"><i class="fas fa-lock"></i> Password</label>
+          <input type="password" id="login-password" placeholder="Enter your password" autocomplete="current-password"
+            required />
+        </div>
+        <button type="submit" id="login-btn" class="btn btn-primary btn-full">
+          <i class="fas fa-sign-in-alt"></i> Sign In
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ MAIN APP -->
+  <div id="app" class="app hidden">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <i class="fas fa-clock header-icon"></i>
+        <div>
+          <h1 class="header-title">PSA Time Entry</h1>
+          <span class="header-subtitle">Professional Services Automation</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="week-selector" id="week-selector-wrap">
+          <label for="week-ending-input">Week Ending:</label>
+          <input type="date" id="week-ending-input" />
+        </div>
+        <div class="user-info">
+          <i class="fas fa-user-circle"></i>
+          <span id="current-user-name">User</span>
+          <span id="user-role-badge" class="role-badge">USER</span>
+        </div>
+        <button id="logout-btn" class="btn btn-ghost btn-sm">
+          <i class="fas fa-sign-out-alt"></i> Logout
+        </button>
+      </div>
+    </header>
+
+    <!-- Admin Panel (visible to admins only) -->
+    <div id="admin-panel" class="admin-panel hidden">
+      <div class="panel-header">
+        <h2><i class="fas fa-shield-alt"></i> Admin Panel — Task Management</h2>
+        <button id="toggle-admin-panel" class="btn btn-ghost btn-sm">
+          <i class="fas fa-chevron-up" id="admin-panel-chevron"></i>
+        </button>
+      </div>
+      <div id="admin-panel-body" class="admin-panel-body">
+        <div class="admin-grid">
+          <!-- Create Task -->
+          <div class="admin-card">
+            <h3><i class="fas fa-plus-circle"></i> Create & Assign Task</h3>
+            <div id="admin-error" class="alert alert-error hidden"></div>
+            <div id="admin-success" class="alert alert-success hidden"></div>
+            <form id="create-task-form">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="task-title-input">Project / Task Title</label>
+                  <input type="text" id="task-title-input" placeholder="e.g. ERP - SAP Migration Q1" required />
+                </div>
+                <div class="form-group">
+                  <label for="assign-user-select">Assign To User</label>
+                  <select id="assign-user-select" required>
+                    <option value="">— Select User —</option>
+                  </select>
+                </div>
+                <div class="form-group form-group-action">
+                  <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Create Task
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <!-- Register User -->
+          <div class="admin-card">
+            <h3><i class="fas fa-user-plus"></i> Register New User</h3>
+            <form id="register-user-form">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="new-username">Username</label>
+                  <input type="text" id="new-username" placeholder="e.g. jdoe" required />
+                </div>
+                <div class="form-group">
+                  <label for="new-password">Password</label>
+                  <input type="password" id="new-password" placeholder="Password" required />
+                </div>
+                <div class="form-group">
+                  <label for="new-role">Role</label>
+                  <select id="new-role">
+                    <option value="USER">USER</option>
+                    <option value="ADMIN">ADMIN</option>
+                  </select>
+                </div>
+                <div class="form-group form-group-action">
+                  <button type="submit" class="btn btn-secondary">
+                    <i class="fas fa-user-plus"></i> Register
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ USER CONTENT (shown for role=USER only) ══ -->
+    <main class="main-content" id="user-content">
+
+      <!-- ── TOP TABLE: Time Entry ── -->
+      <section class="section">
+        <div class="section-header">
+          <div class="section-title">
+            <i class="fas fa-edit"></i>
+            <h2>Time Entry</h2>
+            <span id="entry-week-label" class="week-badge">Select a week</span>
+            <span id="submission-status-badge" class="submission-badge hidden"></span>
+          </div>
+          <div class="section-actions">
+            <button id="save-btn" class="btn btn-success" disabled>
+              <i class="fas fa-save"></i> Save
+            </button>
+            <button id="submit-btn" class="btn btn-primary" disabled>
+              <i class="fas fa-paper-plane"></i> Submit
+            </button>
+            <button id="clear-entries-btn" class="btn btn-ghost btn-sm">
+              <i class="fas fa-times"></i> Clear
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="time-entry-table" id="time-entry-table">
+            <thead>
+              <tr>
+                <th class="col-project">Project / Task</th>
+                <th class="col-day">Mon</th>
+                <th class="col-day">Tue</th>
+                <th class="col-day">Wed</th>
+                <th class="col-day">Thu</th>
+                <th class="col-day">Fri</th>
+                <th class="col-day">Sat</th>
+                <th class="col-day">Sun</th>
+                <th class="col-total">Total</th>
+                <th class="col-notes">Notes</th>
+                <th class="col-remove"></th>
+              </tr>
+            </thead>
+            <tbody id="time-entry-body">
+              <tr class="empty-row">
+                <td colspan="11">
+                  <div class="empty-state">
+                    <i class="fas fa-arrow-down"></i>
+                    <p>Select schedules below and click <strong>Copy Selected</strong> to add rows here.</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr id="totals-row" class="totals-row hidden">
+                <td class="total-label">Daily Totals</td>
+                <td id="total-mon" class="total-cell">0.0</td>
+                <td id="total-tue" class="total-cell">0.0</td>
+                <td id="total-wed" class="total-cell">0.0</td>
+                <td id="total-thu" class="total-cell">0.0</td>
+                <td id="total-fri" class="total-cell">0.0</td>
+                <td id="total-sat" class="total-cell">0.0</td>
+                <td id="total-sun" class="total-cell">0.0</td>
+                <td id="total-all" class="total-cell total-all">0.0</td>
+                <td colspan="2"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
+
+      <!-- ── ACTION BAR ── -->
+      <div class="action-bar">
+        <button id="copy-selected-btn" class="btn btn-accent">
+          <i class="fas fa-copy"></i> Copy Selected to Time Entry
+        </button>
+        <span id="selection-count" class="selection-count">0 selected</span>
+        <div class="action-bar-right">
+          <button id="refresh-schedules-btn" class="btn btn-ghost btn-sm">
+            <i class="fas fa-sync-alt"></i> Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- ── BOTTOM TABLE: My Schedules ── -->
+      <section class="section">
+        <div class="section-header">
+          <div class="section-title">
+            <i class="fas fa-list-alt"></i>
+            <h2>My Schedules</h2>
+            <span id="schedule-count-badge" class="count-badge">0 tasks</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" id="schedule-search" placeholder="Search schedules..." class="search-input" />
+          </div>
+        </div>
+
+        <div id="schedules-loading" class="loading-indicator">
+          <i class="fas fa-spinner fa-spin"></i> Loading schedules...
+        </div>
+        <div id="schedules-error" class="alert alert-error hidden"></div>
+
+        <div class="table-wrapper">
+          <table class="schedules-table" id="schedules-table">
+            <thead>
+              <tr>
+                <th class="col-check">
+                  <input type="checkbox" id="select-all-schedules" title="Select All" />
+                </th>
+                <th>#</th>
+                <th>Project / Task Title</th>
+                <th>Status</th>
+                <th>Assigned By</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="schedules-body">
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ══ ADMIN CONTENT (shown for role=ADMIN only) ══ -->
+    <main class="main-content hidden" id="admin-content">
+
+      <!-- ── ALL ASSIGNED SCHEDULES TABLE ── -->
+      <section class="section">
+        <div class="section-header">
+          <div class="section-title">
+            <i class="fas fa-users"></i>
+            <h2>All Assigned Schedules</h2>
+            <span id="admin-schedule-count-badge" class="count-badge">0 schedules</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" id="admin-schedule-search" placeholder="Search by project or user..."
+              class="search-input" />
+            <button id="admin-refresh-btn" class="btn btn-ghost btn-sm">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+          </div>
+        </div>
+
+        <div id="admin-schedules-loading" class="loading-indicator">
+          <i class="fas fa-spinner fa-spin"></i> Loading...
+        </div>
+        <div id="admin-schedules-error" class="alert alert-error hidden"></div>
+
+        <div class="table-wrapper">
+          <table class="schedules-table" id="admin-schedules-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Project / Task Title</th>
+                <th>Assigned To (User)</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="admin-schedules-body">
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ NOTES MODAL -->
+  <div id="notes-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3><i class="fas fa-sticky-note"></i> Entry Notes</h3>
+        <span id="modal-project-title" class="modal-subtitle"></span>
+        <button id="close-modal-btn" class="modal-close-btn" aria-label="Close modal">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="notes-grid">
+          <div class="note-field">
+            <label for="note-mon"><i class="fas fa-calendar-day"></i> Monday</label>
+            <textarea id="note-mon" placeholder="Monday notes..." rows="3"></textarea>
+          </div>
+          <div class="note-field">
+            <label for="note-tue"><i class="fas fa-calendar-day"></i> Tuesday</label>
+            <textarea id="note-tue" placeholder="Tuesday notes..." rows="3"></textarea>
+          </div>
+          <div class="note-field">
+            <label for="note-wed"><i class="fas fa-calendar-day"></i> Wednesday</label>
+            <textarea id="note-wed" placeholder="Wednesday notes..." rows="3"></textarea>
+          </div>
+          <div class="note-field">
+            <label for="note-thu"><i class="fas fa-calendar-day"></i> Thursday</label>
+            <textarea id="note-thu" placeholder="Thursday notes..." rows="3"></textarea>
+          </div>
+          <div class="note-field">
+            <label for="note-fri"><i class="fas fa-calendar-day"></i> Friday</label>
+            <textarea id="note-fri" placeholder="Friday notes..." rows="3"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="save-notes-btn" class="btn btn-success">
+          <i class="fas fa-save"></i> Save Notes
+        </button>
+        <button id="cancel-notes-btn" class="btn btn-ghost">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════ CONFIRM MODAL -->
+  <div id="confirm-modal" class="modal-overlay hidden">
+    <div class="modal-content modal-content-sm">
+      <div class="modal-header">
+        <h3 id="confirm-modal-title"><i class="fas fa-exclamation-triangle"></i> Confirm Action</h3>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-modal-message">Are you sure?</p>
+      </div>
+      <div class="modal-footer">
+        <button id="confirm-ok-btn" class="btn btn-primary">Confirm</button>
+        <button id="confirm-cancel-btn" class="btn btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
