@@ -41,7 +41,7 @@ model TimeEntry {
   sat         Float    @default(0)
   sun         Float    @default(0)
   notes       String   @default("{\"mon\":\"\",\"tue\":\"\",\"wed\":\"\",\"thu\":\"\",\"fri\":\"\",\"sat\":\"\",\"sun\":\"\"}")
-  isSubmitted Boolean  @default(false)
+  status      String   @default("saved")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   schedule    Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)

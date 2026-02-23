@@ -138,24 +138,28 @@ app.delete('/api/schedules/:id', authenticateToken, requireAdmin, async (req, re
   }
 });
 
-// ─── Time Entry Routes ────────────────────────────────────────────────────────
-// GET time entries for a schedule
-app.get('/api/timeentries', authenticateToken, async (req, res) => {
+// ─── Time Entry Routes (Refactored per strict requirements) ───────────────────
+// GET /api/time-entry/user/:userId — Fetch all entries for a specific user
+app.get('/api/time-entry/user/:userId', authenticateToken, async (req, res) => {
   try {
-    const { scheduleId, weekEnding } = req.query;
-    const where = {};
-
-    if (scheduleId) where.scheduleId = parseInt(scheduleId);
-    if (weekEnding) where.weekEnding = new Date(weekEnding);
-
-    // If user, restrict to their own schedules
-    if (req.user.role !== 'ADMIN') {
-      const userScheduleIds = (await prisma.schedule.findMany({
-        where: { userId: req.user.id },
-        select: { id: true }
-      })).map(s => s.id);
-      where.scheduleId = { in: userScheduleIds };
+    const targetUserId = parseInt(req.params.userId);
+    if (req.user.role !== 'ADMIN' && req.user.id !== targetUserId) {
+      return res.status(403).json({ error: 'Not authorized' });
     }
+
+    // We optionally take weekEnding as query param if needed
+    const { weekEnding } = req.query;
+
+    // Find all schedules for this user
+    const schedules = await prisma.schedule.findMany({
+      where: { userId: targetUserId },
+      select: { id: true, projectTitle: true }
+    });
+
+    const scheduleIds = schedules.map(s => s.id);
+
+    const where = { scheduleId: { in: scheduleIds } };
+    if (weekEnding) where.weekEnding = new Date(weekEnding);
 
     const entries = await prisma.timeEntry.findMany({
       where,
@@ -167,19 +171,19 @@ app.get('/api/timeentries', authenticateToken, async (req, res) => {
       ...e,
       notes: JSON.parse(e.notes || '{}')
     }));
+
     res.json(parsed);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST create or update a time entry (upsert by scheduleId + weekEnding)
-app.post('/api/timeentries', authenticateToken, async (req, res) => {
+// POST /api/time-entry/create — Create draft entry when schedule copied
+app.post('/api/time-entry/create', authenticateToken, async (req, res) => {
   try {
-    const { scheduleId, weekEnding, mon, tue, wed, thu, fri, sat, sun, notes } = req.body;
+    const { scheduleId, weekEnding } = req.body;
     if (!scheduleId || !weekEnding) return res.status(400).json({ error: 'scheduleId and weekEnding required' });
 
-    // Verify ownership
     const schedule = await prisma.schedule.findUnique({ where: { id: parseInt(scheduleId) } });
     if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
     if (req.user.role !== 'ADMIN' && schedule.userId !== req.user.id) {
@@ -187,7 +191,7 @@ app.post('/api/timeentries', authenticateToken, async (req, res) => {
     }
 
     const weekEndingDate = new Date(weekEnding);
-    const notesStr = typeof notes === 'object' ? JSON.stringify(notes) : (notes || '{"mon":"","tue":"","wed":"","thu":"","fri":"","sat":"","sun":""}');
+    const defaultNotes = JSON.stringify({ mon: '', tue: '', wed: '', thu: '', fri: '', sat: '', sun: '' });
 
     const entry = await prisma.timeEntry.upsert({
       where: {
@@ -196,27 +200,12 @@ app.post('/api/timeentries', authenticateToken, async (req, res) => {
           weekEnding: weekEndingDate
         }
       },
-      update: {
-        mon: parseFloat(mon) || 0,
-        tue: parseFloat(tue) || 0,
-        wed: parseFloat(wed) || 0,
-        thu: parseFloat(thu) || 0,
-        fri: parseFloat(fri) || 0,
-        sat: parseFloat(sat) || 0,
-        sun: parseFloat(sun) || 0,
-        notes: notesStr
-      },
+      update: {}, // if it exists, don't overwrite
       create: {
         scheduleId: parseInt(scheduleId),
         weekEnding: weekEndingDate,
-        mon: parseFloat(mon) || 0,
-        tue: parseFloat(tue) || 0,
-        wed: parseFloat(wed) || 0,
-        thu: parseFloat(thu) || 0,
-        fri: parseFloat(fri) || 0,
-        sat: parseFloat(sat) || 0,
-        sun: parseFloat(sun) || 0,
-        notes: notesStr
+        status: 'saved',
+        notes: defaultNotes
       }
     });
 
@@ -226,153 +215,71 @@ app.post('/api/timeentries', authenticateToken, async (req, res) => {
   }
 });
 
-// PATCH submit a time entry
-app.patch('/api/timeentries/:id/submit', authenticateToken, async (req, res) => {
+// POST /api/time-entry/save — Update existing entry
+app.post('/api/time-entry/save', authenticateToken, async (req, res) => {
   try {
-    const entry = await prisma.timeEntry.findUnique({
-      where: { id: parseInt(req.params.id) },
+    const { entryId, mon, tue, wed, thu, fri, sat, sun, notes } = req.body;
+    if (!entryId) return res.status(400).json({ error: 'entryId required' });
+
+    const existing = await prisma.timeEntry.findUnique({
+      where: { id: parseInt(entryId) },
       include: { schedule: true }
     });
-    if (!entry) return res.status(404).json({ error: 'Time entry not found' });
-    if (req.user.role !== 'ADMIN' && entry.schedule.userId !== req.user.id) {
+
+    if (!existing) return res.status(404).json({ error: 'Entry not found' });
+    if (req.user.role !== 'ADMIN' && existing.schedule.userId !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
+    }
+    if (existing.status === 'submitted') {
+      return res.status(400).json({ error: 'Cannot save a submitted entry' });
+    }
+
+    const updateData = { status: 'saved' };
+    if (mon !== undefined) updateData.mon = parseFloat(mon) || 0;
+    if (tue !== undefined) updateData.tue = parseFloat(tue) || 0;
+    if (wed !== undefined) updateData.wed = parseFloat(wed) || 0;
+    if (thu !== undefined) updateData.thu = parseFloat(thu) || 0;
+    if (fri !== undefined) updateData.fri = parseFloat(fri) || 0;
+    if (sat !== undefined) updateData.sat = parseFloat(sat) || 0;
+    if (sun !== undefined) updateData.sun = parseFloat(sun) || 0;
+
+    if (notes !== undefined) {
+      updateData.notes = typeof notes === 'object' ? JSON.stringify(notes) : String(notes);
     }
 
     const updated = await prisma.timeEntry.update({
-      where: { id: parseInt(req.params.id) },
-      data: { isSubmitted: true }
+      where: { id: parseInt(entryId) },
+      data: updateData
     });
+
     res.json({ ...updated, notes: JSON.parse(updated.notes) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PATCH update notes for a specific entry
-app.patch('/api/timeentries/:id/notes', authenticateToken, async (req, res) => {
+// POST /api/time-entry/submit — Submit an entry
+app.post('/api/time-entry/submit', authenticateToken, async (req, res) => {
   try {
-    const { notes } = req.body;
-    const entry = await prisma.timeEntry.findUnique({
-      where: { id: parseInt(req.params.id) },
+    const { entryId } = req.body;
+    if (!entryId) return res.status(400).json({ error: 'entryId required' });
+
+    const existing = await prisma.timeEntry.findUnique({
+      where: { id: parseInt(entryId) },
       include: { schedule: true }
     });
-    if (!entry) return res.status(404).json({ error: 'Time entry not found' });
-    if (req.user.role !== 'ADMIN' && entry.schedule.userId !== req.user.id) {
+
+    if (!existing) return res.status(404).json({ error: 'Entry not found' });
+    if (req.user.role !== 'ADMIN' && existing.schedule.userId !== req.user.id) {
       return res.status(403).json({ error: 'Not authorized' });
-    }
-    if (entry.isSubmitted) return res.status(400).json({ error: 'Cannot edit a submitted entry' });
-
-    const notesStr = typeof notes === 'object' ? JSON.stringify(notes) : notes;
-    const updated = await prisma.timeEntry.update({
-      where: { id: parseInt(req.params.id) },
-      data: { notes: notesStr }
-    });
-    res.json({ ...updated, notes: JSON.parse(updated.notes) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PATCH update hours only for an existing entry
-app.patch('/api/timeentries/:id/hours', authenticateToken, async (req, res) => {
-  try {
-    const entry = await prisma.timeEntry.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: { schedule: true }
-    });
-    if (!entry) return res.status(404).json({ error: 'Time entry not found' });
-    if (req.user.role !== 'ADMIN' && entry.schedule.userId !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    if (entry.isSubmitted) return res.status(400).json({ error: 'Cannot edit a submitted entry' });
-
-    const validDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-    const { mon, tue, wed, thu, fri, sat, sun } = req.body;
-    const update = {};
-    if (mon !== undefined) update.mon = parseFloat(mon) || 0;
-    if (tue !== undefined) update.tue = parseFloat(tue) || 0;
-    if (wed !== undefined) update.wed = parseFloat(wed) || 0;
-    if (thu !== undefined) update.thu = parseFloat(thu) || 0;
-    if (fri !== undefined) update.fri = parseFloat(fri) || 0;
-    if (sat !== undefined) update.sat = parseFloat(sat) || 0;
-    if (sun !== undefined) update.sun = parseFloat(sun) || 0;
-
-    if (Object.keys(update).length === 0) {
-      return res.status(400).json({ error: 'At least one day field (mon–sun) is required' });
     }
 
     const updated = await prisma.timeEntry.update({
-      where: { id: parseInt(req.params.id) },
-      data: update
+      where: { id: parseInt(entryId) },
+      data: { status: 'submitted' }
     });
+
     res.json({ ...updated, notes: JSON.parse(updated.notes) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PATCH update a single day's note for an existing entry
-app.patch('/api/timeentries/:id/notes/day', authenticateToken, async (req, res) => {
-  try {
-    const { day, text, mode } = req.body;
-    if (!day || text === undefined) {
-      return res.status(400).json({ error: '"day" and "text" are required' });
-    }
-
-    const validDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-    const dayKey = day.toLowerCase().substring(0, 3);
-    if (!validDays.includes(dayKey)) {
-      return res.status(400).json({ error: `Invalid day "${day}". Use: mon, tue, wed, thu, fri, sat, sun` });
-    }
-
-    const entry = await prisma.timeEntry.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: { schedule: true }
-    });
-    if (!entry) return res.status(404).json({ error: 'Time entry not found' });
-    if (req.user.role !== 'ADMIN' && entry.schedule.userId !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    if (entry.isSubmitted) return res.status(400).json({ error: 'Cannot edit a submitted entry' });
-
-    const currentNotes = JSON.parse(entry.notes || '{}');
-    if (mode === 'append') {
-      currentNotes[dayKey] = currentNotes[dayKey]
-        ? `${currentNotes[dayKey]}\n${text}`
-        : text;
-    } else {
-      currentNotes[dayKey] = text;
-    }
-
-    const updated = await prisma.timeEntry.update({
-      where: { id: parseInt(req.params.id) },
-      data: { notes: JSON.stringify(currentNotes) }
-    });
-    res.json({ ...updated, notes: JSON.parse(updated.notes) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET schedule names for a specific user (admin can query any user; user can only query themselves)
-app.get('/api/users/:userId/schedules', authenticateToken, async (req, res) => {
-  try {
-    const targetId = parseInt(req.params.userId);
-    if (req.user.role !== 'ADMIN' && req.user.id !== targetId) {
-      return res.status(403).json({ error: 'Not authorized to view another user\'s schedules' });
-    }
-
-    // Verify user exists
-    const user = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true, username: true } });
-    if (!user) return res.status(404).json({ error: `User with id ${targetId} not found` });
-
-    const schedules = await prisma.schedule.findMany({
-      where: { userId: targetId },
-      select: { id: true, projectTitle: true, isAssigned: true, createdAt: true },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    res.json({ user, schedules });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -383,33 +290,28 @@ app.get('/api/users/:userId/schedules', authenticateToken, async (req, res) => {
 app.patch('/api/external/update-note', authenticateApiKey, async (req, res) => {
   try {
     const { entryId, day, text, mode } = req.body;
-    // mode: 'replace' (default) or 'append'
     if (!entryId || !day || text === undefined) {
       return res.status(400).json({ error: 'entryId, day, and text are required' });
     }
 
     const validDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
     const dayKey = day.toLowerCase().substring(0, 3);
-    if (!validDays.includes(dayKey)) {
-      return res.status(400).json({ error: `Invalid day: ${day}. Use: monday, tuesday, wednesday, thursday, friday, saturday, sunday` });
-    }
+    if (!validDays.includes(dayKey)) return res.status(400).json({ error: 'Invalid day' });
 
     const entry = await prisma.timeEntry.findUnique({ where: { id: parseInt(entryId) } });
     if (!entry) return res.status(404).json({ error: 'Time entry not found' });
-    if (entry.isSubmitted) return res.status(400).json({ error: 'Cannot update a submitted entry' });
+    if (entry.status === 'submitted') return res.status(400).json({ error: 'Cannot update a submitted entry' });
 
     const currentNotes = JSON.parse(entry.notes || '{}');
     if (mode === 'append') {
-      currentNotes[dayKey] = currentNotes[dayKey]
-        ? `${currentNotes[dayKey]}\n${text}`
-        : text;
+      currentNotes[dayKey] = currentNotes[dayKey] ? `${currentNotes[dayKey]}\n${text}` : text;
     } else {
       currentNotes[dayKey] = text;
     }
 
     const updated = await prisma.timeEntry.update({
       where: { id: parseInt(entryId) },
-      data: { notes: JSON.stringify(currentNotes) }
+      data: { notes: JSON.stringify(currentNotes), status: 'saved' }
     });
 
     res.json({ success: true, entryId: updated.id, updatedDay: dayKey, notes: JSON.parse(updated.notes) });
@@ -423,7 +325,7 @@ app.post('/api/external/submit-timesheet', authenticateApiKey, async (req, res) 
   try {
     const { username, scheduleId, weekEnding, mon, tue, wed, thu, fri, sat, sun, notes } = req.body;
     if (!username || !scheduleId || !weekEnding) {
-      return res.status(400).json({ error: 'username, scheduleId, and weekEnding are required' });
+      return res.status(400).json({ error: 'username, scheduleId, and weekEnding required' });
     }
 
     const user = await prisma.user.findUnique({ where: { username } });
@@ -435,9 +337,7 @@ app.post('/api/external/submit-timesheet', authenticateApiKey, async (req, res) 
     if (!schedule) return res.status(404).json({ error: 'Schedule not found for this user' });
 
     const weekEndingDate = new Date(weekEnding);
-    const notesStr = notes
-      ? (typeof notes === 'object' ? JSON.stringify(notes) : notes)
-      : '{"mon":"","tue":"","wed":"","thu":"","fri":"","sat":"","sun":""}';
+    const notesStr = notes ? (typeof notes === 'object' ? JSON.stringify(notes) : notes) : '{}';
 
     const entry = await prisma.timeEntry.upsert({
       where: {
@@ -447,36 +347,20 @@ app.post('/api/external/submit-timesheet', authenticateApiKey, async (req, res) 
         }
       },
       update: {
-        mon: parseFloat(mon) || 0,
-        tue: parseFloat(tue) || 0,
-        wed: parseFloat(wed) || 0,
-        thu: parseFloat(thu) || 0,
-        fri: parseFloat(fri) || 0,
-        sat: parseFloat(sat) || 0,
-        sun: parseFloat(sun) || 0,
-        notes: notesStr,
-        isSubmitted: true
+        mon: parseFloat(mon) || 0, tue: parseFloat(tue) || 0, wed: parseFloat(wed) || 0,
+        thu: parseFloat(thu) || 0, fri: parseFloat(fri) || 0, sat: parseFloat(sat) || 0, sun: parseFloat(sun) || 0,
+        notes: notesStr, status: 'submitted'
       },
       create: {
         scheduleId: parseInt(scheduleId),
         weekEnding: weekEndingDate,
-        mon: parseFloat(mon) || 0,
-        tue: parseFloat(tue) || 0,
-        wed: parseFloat(wed) || 0,
-        thu: parseFloat(thu) || 0,
-        fri: parseFloat(fri) || 0,
-        sat: parseFloat(sat) || 0,
-        sun: parseFloat(sun) || 0,
-        notes: notesStr,
-        isSubmitted: true
+        mon: parseFloat(mon) || 0, tue: parseFloat(tue) || 0, wed: parseFloat(wed) || 0,
+        thu: parseFloat(thu) || 0, fri: parseFloat(fri) || 0, sat: parseFloat(sat) || 0, sun: parseFloat(sun) || 0,
+        notes: notesStr, status: 'submitted'
       }
     });
 
-    res.json({
-      success: true,
-      message: 'Timesheet saved and submitted successfully',
-      entry: { ...entry, notes: JSON.parse(entry.notes) }
-    });
+    res.json({ success: true, message: 'Submitted', entry: { ...entry, notes: JSON.parse(entry.notes) } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

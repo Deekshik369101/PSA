@@ -127,6 +127,7 @@ document.getElementById('login-form').addEventListener('submit', async e => {
             updateWeekLabel();
 
             loadSchedules();
+            loadTimeEntries();
         }
     } catch (err) {
         const el = document.getElementById('login-error');
@@ -156,6 +157,7 @@ document.getElementById('logout-btn').addEventListener('click', () => {
 document.getElementById('week-ending-input').addEventListener('change', function () {
     state.weekEnding = this.value;
     updateWeekLabel();
+    loadTimeEntries();
 });
 
 function updateWeekLabel() {
@@ -460,23 +462,25 @@ document.getElementById('copy-selected-btn').addEventListener('click', () => {
         return;
     }
 
-    checked.forEach(cb => {
+    checked.forEach(async cb => {
         const schedId = parseInt(cb.dataset.id);
         if (state.entryRows.some(r => r.scheduleId === schedId)) return; // already added
 
         const sched = state.schedules.find(s => s.id === schedId);
         if (!sched) return;
 
-        const rowData = {
-            scheduleId: sched.id,
-            projectTitle: sched.projectTitle,
-            entryId: null,
-            mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0,
-            notes: { mon: '', tue: '', wed: '', thu: '', fri: '', sat: '', sun: '' },
-            isSubmitted: false
-        };
-        state.entryRows.push(rowData);
-        addTimeEntryRow(rowData, state.entryRows.length - 1);
+        try {
+            // Immediately create entry in DB
+            const entry = await api('POST', '/api/time-entry/create', { scheduleId: schedId, weekEnding: state.weekEnding });
+            entry.projectTitle = sched.projectTitle;
+            state.entryRows.push(entry);
+            addTimeEntryRow(entry, state.entryRows.length - 1);
+            markCopiedSchedules();
+            updateEntryButtons();
+            updateTotalsRow();
+        } catch (err) {
+            showToast(`Failed to create entry: ${err.message}`, 'error');
+        }
     });
 
     // Uncheck all
@@ -499,6 +503,24 @@ function markCopiedSchedules() {
 }
 
 // ═══════════════════════════════════════════════ TIME ENTRY TABLE
+
+async function loadTimeEntries() {
+    if (!state.user || !state.weekEnding || state.user.role === 'ADMIN') return;
+    clearTimeEntryTable();
+    try {
+        const entries = await api('GET', `/api/time-entry/user/${state.user.id}?weekEnding=${state.weekEnding}`);
+        state.entryRows = entries.map(e => ({
+            ...e,
+            projectTitle: e.schedule?.projectTitle || 'Unknown Project'
+        }));
+        rebuildTimeEntryTable();
+        updateTotalsRow();
+        updateEntryButtons();
+        markCopiedSchedules();
+    } catch (err) {
+        showToast('Failed to load time entries: ' + err.message, 'error');
+    }
+}
 
 function clearTimeEntryTable() {
     state.entryRows = [];
@@ -525,14 +547,18 @@ function addTimeEntryRow(rowData, rowIndex) {
     const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
     const tr = document.createElement('tr');
     tr.dataset.rowIndex = rowIndex;
-    if (rowData.isSubmitted) tr.classList.add('submitted-row');
+    const isSub = rowData.status === 'submitted';
+    if (isSub) tr.classList.add('submitted-row');
 
     const rowTotal = days.reduce((s, d) => s + (rowData[d] || 0), 0);
+    const statusChip = isSub
+        ? '<br><span class="status-chip status-submitted" style="margin-top:4px;"><i class="fas fa-lock"></i> Submitted</span>'
+        : '<br><span class="status-chip status-saved" style="margin-top:4px;color:var(--brand-purple);"><i class="fas fa-save"></i> Saved</span>';
 
     tr.innerHTML = `
     <td class="project-cell">
       ${escHtml(rowData.projectTitle)}
-      ${rowData.isSubmitted ? '<br><span class="status-chip status-submitted" style="margin-top:4px;"><i class="fas fa-lock"></i> Submitted</span>' : ''}
+      ${statusChip}
     </td>
     ${days.map(d => `
       <td>
@@ -541,7 +567,7 @@ function addTimeEntryRow(rowData, rowIndex) {
           value="${rowData[d] > 0 ? rowData[d] : ''}"
           min="0" max="24" step="0.5"
           placeholder="0"
-          ${rowData.isSubmitted ? 'disabled' : ''}
+          ${isSub ? 'disabled' : ''}
           ${rowData[d] > 0 ? 'class="hours-input day-input has-value"' : ''}
         />
       </td>
@@ -554,7 +580,7 @@ function addTimeEntryRow(rowData, rowIndex) {
       </button>
     </td>
     <td>
-      <button class="btn btn-ghost btn-icon remove-row-btn" data-row="${rowIndex}" title="Remove row" ${rowData.isSubmitted ? 'disabled' : ''}>
+      <button class="btn btn-ghost btn-icon remove-row-btn" data-row="${rowIndex}" title="Remove row" ${isSub ? 'disabled' : ''}>
         <i class="fas fa-times"></i>
       </button>
     </td>
@@ -655,11 +681,13 @@ function hasNotes(notes) {
 
 function updateEntryButtons() {
     const hasRows = state.entryRows.length > 0;
-    document.getElementById('save-btn').disabled = !hasRows || state.isSubmitted;
-    document.getElementById('submit-btn').disabled = !hasRows || state.isSubmitted;
+    const allSubmitted = hasRows && state.entryRows.every(r => r.status === 'submitted');
+
+    document.getElementById('save-btn').disabled = !hasRows || allSubmitted;
+    document.getElementById('submit-btn').disabled = !hasRows || allSubmitted;
 
     const badge = document.getElementById('submission-status-badge');
-    if (state.isSubmitted) {
+    if (allSubmitted && hasRows) {
         badge.className = 'submission-badge badge-submitted';
         badge.textContent = '✓ Submitted';
         badge.classList.remove('hidden');
@@ -683,7 +711,7 @@ document.getElementById('clear-entries-btn').addEventListener('click', async () 
 
 // ═══════════════════════════════════════════════ SAVE & SUBMIT
 
-document.getElementById('save-btn').addEventListener('click', saveTimeEntries);
+document.getElementById('save-btn').addEventListener('click', () => saveTimeEntries(false));
 document.getElementById('submit-btn').addEventListener('click', async () => {
     const ok = await confirm('Submit Timesheet', 'Submitting will lock all entries for this week. This action cannot be undone. Continue?');
     if (!ok) return;
@@ -691,52 +719,31 @@ document.getElementById('submit-btn').addEventListener('click', async () => {
 });
 
 async function saveTimeEntries(andSubmit = false) {
-    if (!state.weekEnding) {
-        showToast('Please select a week ending date.', 'warning');
-        return;
-    }
-    if (!state.entryRows.length) {
-        showToast('No time entry rows to save.', 'warning');
-        return;
-    }
+    if (!state.weekEnding) return;
+    if (!state.entryRows.length) return;
 
     const btn = andSubmit ? document.getElementById('submit-btn') : document.getElementById('save-btn');
     btn.disabled = true;
     btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${andSubmit ? 'Submitting...' : 'Saving...'}`;
 
     try {
-        let lastEntryId = null;
-
+        const endpoint = andSubmit ? '/api/time-entry/submit' : '/api/time-entry/save';
         for (let i = 0; i < state.entryRows.length; i++) {
             const row = state.entryRows[i];
-            const saved = await api('POST', '/api/timeentries', {
-                scheduleId: row.scheduleId,
-                weekEnding: state.weekEnding,
+            if (!row.id || row.status === 'submitted') continue;
+
+            await api('POST', endpoint, {
+                entryId: row.id,
                 mon: row.mon, tue: row.tue, wed: row.wed, thu: row.thu,
                 fri: row.fri, sat: row.sat, sun: row.sun,
                 notes: row.notes
             });
-            state.entryRows[i].entryId = saved.id;
-            lastEntryId = saved.id;
-
-            if (andSubmit) {
-                await api('PATCH', `/api/timeentries/${saved.id}/submit`);
-                state.entryRows[i].isSubmitted = true;
-            }
         }
 
-        if (andSubmit) {
-            state.isSubmitted = true;
-            showToast('Timesheet submitted successfully! All entries are now locked.', 'success', 5000);
-            rebuildTimeEntryTable();
-        } else {
-            showToast('Time entries saved successfully!');
-        }
-
-        state.currentEntryId = lastEntryId;
-        updateEntryButtons();
+        showToast(andSubmit ? 'Submitted successfully' : 'Saved successfully', 'success', 3000);
+        await loadTimeEntries();
     } catch (err) {
-        showToast(`Failed to save: ${err.message}`, 'error');
+        showToast(`Error: ${err.message}`, 'error');
     } finally {
         const label = andSubmit ? '<i class="fas fa-paper-plane"></i> Submit' : '<i class="fas fa-save"></i> Save';
         btn.innerHTML = label;
@@ -754,13 +761,14 @@ function openNotesModal(rowIndex) {
     document.getElementById('modal-project-title').textContent = row.projectTitle;
 
     const days = ['mon', 'tue', 'wed', 'thu', 'fri'];
+    const isSub = row.status === 'submitted';
     days.forEach(d => {
         const ta = document.getElementById(`note-${d}`);
         ta.value = row.notes?.[d] || '';
-        ta.disabled = row.isSubmitted;
+        ta.disabled = isSub;
     });
 
-    document.getElementById('save-notes-btn').disabled = row.isSubmitted;
+    document.getElementById('save-notes-btn').disabled = isSub;
     document.getElementById('notes-modal').classList.remove('hidden');
 }
 
@@ -791,18 +799,7 @@ document.getElementById('save-notes-btn').addEventListener('click', async () => 
         sun: row.notes?.sun || ''
     };
 
-    // If entry already saved to DB, update notes via API
-    if (row.entryId) {
-        try {
-            await api('PATCH', `/api/timeentries/${row.entryId}/notes`, { notes });
-            showToast('Notes saved to server');
-        } catch (err) {
-            showToast(`Could not save to server: ${err.message}`, 'warning');
-        }
-    } else {
-        showToast('Notes saved locally (will persist on next Save)');
-    }
-
+    // No DB call! Only update frontend state
     state.entryRows[rowIndex].notes = notes;
 
     // Update notes button indicator
