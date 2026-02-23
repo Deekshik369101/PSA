@@ -273,6 +273,111 @@ app.patch('/api/timeentries/:id/notes', authenticateToken, async (req, res) => {
   }
 });
 
+// PATCH update hours only for an existing entry
+app.patch('/api/timeentries/:id/hours', authenticateToken, async (req, res) => {
+  try {
+    const entry = await prisma.timeEntry.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { schedule: true }
+    });
+    if (!entry) return res.status(404).json({ error: 'Time entry not found' });
+    if (req.user.role !== 'ADMIN' && entry.schedule.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    if (entry.isSubmitted) return res.status(400).json({ error: 'Cannot edit a submitted entry' });
+
+    const validDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    const { mon, tue, wed, thu, fri, sat, sun } = req.body;
+    const update = {};
+    if (mon !== undefined) update.mon = parseFloat(mon) || 0;
+    if (tue !== undefined) update.tue = parseFloat(tue) || 0;
+    if (wed !== undefined) update.wed = parseFloat(wed) || 0;
+    if (thu !== undefined) update.thu = parseFloat(thu) || 0;
+    if (fri !== undefined) update.fri = parseFloat(fri) || 0;
+    if (sat !== undefined) update.sat = parseFloat(sat) || 0;
+    if (sun !== undefined) update.sun = parseFloat(sun) || 0;
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'At least one day field (mon–sun) is required' });
+    }
+
+    const updated = await prisma.timeEntry.update({
+      where: { id: parseInt(req.params.id) },
+      data: update
+    });
+    res.json({ ...updated, notes: JSON.parse(updated.notes) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH update a single day's note for an existing entry
+app.patch('/api/timeentries/:id/notes/day', authenticateToken, async (req, res) => {
+  try {
+    const { day, text, mode } = req.body;
+    if (!day || text === undefined) {
+      return res.status(400).json({ error: '"day" and "text" are required' });
+    }
+
+    const validDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    const dayKey = day.toLowerCase().substring(0, 3);
+    if (!validDays.includes(dayKey)) {
+      return res.status(400).json({ error: `Invalid day "${day}". Use: mon, tue, wed, thu, fri, sat, sun` });
+    }
+
+    const entry = await prisma.timeEntry.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { schedule: true }
+    });
+    if (!entry) return res.status(404).json({ error: 'Time entry not found' });
+    if (req.user.role !== 'ADMIN' && entry.schedule.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    if (entry.isSubmitted) return res.status(400).json({ error: 'Cannot edit a submitted entry' });
+
+    const currentNotes = JSON.parse(entry.notes || '{}');
+    if (mode === 'append') {
+      currentNotes[dayKey] = currentNotes[dayKey]
+        ? `${currentNotes[dayKey]}\n${text}`
+        : text;
+    } else {
+      currentNotes[dayKey] = text;
+    }
+
+    const updated = await prisma.timeEntry.update({
+      where: { id: parseInt(req.params.id) },
+      data: { notes: JSON.stringify(currentNotes) }
+    });
+    res.json({ ...updated, notes: JSON.parse(updated.notes) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET schedule names for a specific user (admin can query any user; user can only query themselves)
+app.get('/api/users/:userId/schedules', authenticateToken, async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.userId);
+    if (req.user.role !== 'ADMIN' && req.user.id !== targetId) {
+      return res.status(403).json({ error: 'Not authorized to view another user\'s schedules' });
+    }
+
+    // Verify user exists
+    const user = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true, username: true } });
+    if (!user) return res.status(404).json({ error: `User with id ${targetId} not found` });
+
+    const schedules = await prisma.schedule.findMany({
+      where: { userId: targetId },
+      select: { id: true, projectTitle: true, isAssigned: true, createdAt: true },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({ user, schedules });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── External API (UiPath / Snowflake) ───────────────────────────────────────
 // PATCH /api/external/update-note
 app.patch('/api/external/update-note', authenticateApiKey, async (req, res) => {
